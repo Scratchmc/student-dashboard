@@ -179,9 +179,6 @@ uploaded = st.file_uploader("Upload wekelijkse CSV of Excel (1 tabblad; Namen in
 df = read_uploaded_to_df(uploaded)
 
 if df is not None:
-    st.subheader("1) Controleer data (we gebruiken kolom B en L:AE)")
-    st.dataframe(df.head(20), use_container_width=True)
-
     # --- Extractie op basis van positie ---
     # Kolom B = index 1 (0-based)
     # Kolommen L..AE = index 11..30 (inclusief)
@@ -189,11 +186,29 @@ if df is not None:
         st.error("Het bestand heeft minder dan 31 kolommen. Verwacht: Namen in kolom B en uren in kolommen L t/m AE.")
     else:
         name_series = df.iloc[:, 1].astype(str).str.strip()
-        hours_block = df.iloc[:, 11:31]  # L..AE
+        hours_block = df.iloc[:, 11:31]  # L..AE (in- en uitchecktijden)
 
-        minutes_sum = hours_block.applymap(cell_to_minutes).sum(axis=1)
+# Bereken minuten uit in/uit paren: (L vs M), (N vs O), ...
+# Regel: als er wel een in-check is maar geen uit-check -> 0 minuten voor dat paar
+# Alleen optellen als beide datums geldig zijn en out > in
+pair_minutes = []
+num_cols = hours_block.shape[1]
 
-        per_student = pd.DataFrame({
+for start_idx in range(0, num_cols, 2):
+    if start_idx + 1 >= num_cols:
+        break
+    in_s = pd.to_datetime(hours_block.iloc[:, start_idx], errors='coerce')
+    out_s = pd.to_datetime(hours_block.iloc[:, start_idx + 1], errors='coerce')
+    delta = (out_s - in_s).dt.total_seconds() / 60.0
+    delta = delta.mask(in_s.isna() | out_s.isna() | (delta < 0), 0.0)
+    pair_minutes.append(delta.fillna(0.0))
+
+if pair_minutes:
+    minutes_sum = pd.concat(pair_minutes, axis=1).sum(axis=1)
+else:
+    minutes_sum = pd.Series(0.0, index=hours_block.index)
+
+per_student = pd.DataFrame({
             "Naam": name_series,
             "minutes": minutes_sum
         })
@@ -247,7 +262,7 @@ if df is not None:
 # Weergave + styling + coach-editor
 # ---------------------------------
 if not st.session_state.cumulative.empty:
-    st.subheader("2) Overzicht (per week)")
+    st.subheader("1) Overzicht (per week)")
 
     def style_df(df_in: pd.DataFrame):
         week_cols = [c for c in df_in.columns if isinstance(c, str) and c.startswith("W") and "-" in c]
