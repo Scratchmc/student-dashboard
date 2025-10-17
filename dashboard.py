@@ -16,7 +16,10 @@ TZ = ZoneInfo("Europe/Amsterdam")
 
 st.set_page_config(page_title="Weekuren (Scratch)", layout="wide")
 st.title("📊 Weekuren per student")
-st.caption("Upload wekelijks je CSV/Excel. Elke upload voegt een nieuwe kolom toe met het weeknummer. Namen in kolom B, uren in kolommen L t/m AE.")
+st.caption(
+    "Upload wekelijks je CSV/Excel. Namen in kolom B. In-/uitcheckparen uit vaste kolommen: "
+    "M–O, Q–S, U–W, Y–AA, AC–AE. Elke upload voegt een weekkolom toe."
+)
 
 # ---------------------------------
 # Permanente opslag
@@ -25,6 +28,16 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATA_FILE = DATA_DIR / "weekuren_cumulatief.csv"
 REQUIRED_BASE_COLS = ["Naam", "Coach"]
+
+# Kolomparen (0-based indexen) voor in-/uitchecks
+# A=0, B=1, ..., M=12, O=14, Q=16, S=18, U=20, W=22, Y=24, AA=26, AC=28, AE=30
+CHECK_PAIRS = [
+    (12, 14),  # M & O
+    (16, 18),  # Q & S
+    (20, 22),  # U & W
+    (24, 26),  # Y & AA
+    (28, 30),  # AC & AE
+]
 
 # ---------------------------------
 # Helpers
@@ -36,42 +49,6 @@ def hhmm_from_minutes(total_minutes: float) -> str:
     total_minutes = int(round(float(total_minutes)))
     h, m = divmod(total_minutes, 60)
     return f"{h}:{m:02d}"
-
-
-def cell_to_minutes(v) -> float:
-    """Converteert diverse formaten (timedelta, 'H:MM', 'HH:MM', float uren, '1,5' uren) naar minuten."""
-    if pd.isna(v):
-        return 0.0
-    # timedelta of pandas Timedelta-achtige
-    try:
-        if isinstance(v, pd.Timedelta) or hasattr(v, "components"):
-            return float(pd.to_timedelta(v).total_seconds() / 60.0)
-    except Exception:
-        pass
-    # strings
-    if isinstance(v, str):
-        s = v.strip()
-        if ":" in s:
-            try:
-                parts = s.split(":")
-                if len(parts) >= 2:
-                    h = int(parts[0])
-                    m = int(parts[1][:2])
-                    return float(h * 60 + m)
-            except Exception:
-                pass
-        # getal met komma/punt: interpreteer als uren
-        s2 = s.replace(",", ".")
-        try:
-            hrs = float(s2)
-            return hrs * 60.0
-        except Exception:
-            return 0.0
-    # numeriek: interpreteer als uren
-    try:
-        return float(v) * 60.0
-    except Exception:
-        return 0.0
 
 
 def color_threshold(val: str):
@@ -172,43 +149,47 @@ with st.sidebar:
 st.divider()
 
 # ---------------------------------
-# Upload & verwerken
+# Upload & verwerken (direct, geen inspectiestap)
 # ---------------------------------
-uploaded = st.file_uploader("Upload wekelijkse CSV of Excel (1 tabblad; Namen in B, uren in L–AE)", type=["csv", "xlsx", "xls"]) 
+uploaded = st.file_uploader(
+    "Upload wekelijkse CSV of Excel (1 tabblad; Namen in B, paren: M–O, Q–S, U–W, Y–AA, AC–AE)",
+    type=["csv", "xlsx", "xls"],
+)
 
 df = read_uploaded_to_df(uploaded)
 
 if df is not None:
-    # --- Extractie op basis van positie ---
-    # Kolom B = index 1 (0-based)
-    # Kolommen L..AE = index 11..30 (inclusief)
+    # --- Extractie op basis van vaste posities ---
+    # B = index 1; M/O/Q/S/U/W/Y/AA/AC/AE = 12/14/16/18/20/22/24/26/28/30
     if df.shape[1] < 31:
-        st.error("Het bestand heeft minder dan 31 kolommen. Verwacht: Namen in kolom B en uren in kolommen L t/m AE.")
+        st.error(
+            "Het bestand heeft minder dan 31 kolommen. Verwacht: Naam in B en in-/uitcheckparen M–O, Q–S, U–W, Y–AA, AC–AE."
+        )
     else:
         name_series = df.iloc[:, 1].astype(str).str.strip()
-        hours_block = df.iloc[:, 11:31]  # L..AE (in- en uitchecktijden)
 
-# Bereken minuten uit in/uit paren: (L vs M), (N vs O), ...
-# Regel: als er wel een in-check is maar geen uit-check -> 0 minuten voor dat paar
-# Alleen optellen als beide datums geldig zijn en out > in
-pair_minutes = []
-num_cols = hours_block.shape[1]
+        # Bereken minuten uit de gedefinieerde paren
+        pair_minutes = []
+        for (c_in, c_out) in CHECK_PAIRS:
+            # beveiliging als column out of range is
+            if c_in >= df.shape[1] or c_out >= df.shape[1]:
+                # maak een nul-serie met juiste index
+                zero_series = pd.Series(0.0, index=df.index)
+                pair_minutes.append(zero_series)
+                continue
+            in_s = pd.to_datetime(df.iloc[:, c_in], errors="coerce")
+            out_s = pd.to_datetime(df.iloc[:, c_out], errors="coerce")
+            delta = (out_s - in_s).dt.total_seconds() / 60.0
+            # alleen tellen als beide geldig en out > in; anders 0
+            delta = delta.mask(in_s.isna() | out_s.isna() | (delta < 0), 0.0)
+            pair_minutes.append(delta.fillna(0.0))
 
-for start_idx in range(0, num_cols, 2):
-    if start_idx + 1 >= num_cols:
-        break
-    in_s = pd.to_datetime(hours_block.iloc[:, start_idx], errors='coerce')
-    out_s = pd.to_datetime(hours_block.iloc[:, start_idx + 1], errors='coerce')
-    delta = (out_s - in_s).dt.total_seconds() / 60.0
-    delta = delta.mask(in_s.isna() | out_s.isna() | (delta < 0), 0.0)
-    pair_minutes.append(delta.fillna(0.0))
+        if pair_minutes:
+            minutes_sum = pd.concat(pair_minutes, axis=1).sum(axis=1)
+        else:
+            minutes_sum = pd.Series(0.0, index=df.index)
 
-if pair_minutes:
-    minutes_sum = pd.concat(pair_minutes, axis=1).sum(axis=1)
-else:
-    minutes_sum = pd.Series(0.0, index=hours_block.index)
-
-per_student = pd.DataFrame({
+        per_student = pd.DataFrame({
             "Naam": name_series,
             "minutes": minutes_sum
         })
