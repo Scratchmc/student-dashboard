@@ -28,6 +28,8 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATA_FILE = DATA_DIR / "weekuren_cumulatief.csv"
 REQUIRED_BASE_COLS = ["Naam", "Coach"]
+COACHES_FILE = DATA_DIR / "coaches.json"
+DEFAULT_COACHES = ["Jan Willem", "Jaap", "Thomas", "Meis"]
 
 CHECK_PAIRS = [
     (12, 14),  # M & O
@@ -110,13 +112,64 @@ with st.sidebar:
     st.header("Opties")
     st.caption(f"Opslagpad: `{DATA_FILE}`")
 
+    # Coach-filter (gebruik masterlijst + waarden uit data)
     cum_for_filter = st.session_state.cumulative.copy()
-    coach_options = sorted([
+    data_coaches = [
         c for c in cum_for_filter.get("Coach", pd.Series([])).dropna().unique().tolist()
         if str(c).strip() != ""
-    ])
-    selected_coaches = st.multiselect("Filter op coach", options=coach_options, default=[])
+    ]
+
+    # Laad/initialiseer masterlijst
+    import json
+    if "coach_options_master" not in st.session_state:
+        if COACHES_FILE.exists():
+            try:
+                with open(COACHES_FILE, "r", encoding="utf-8") as f:
+                    st.session_state.coach_options_master = json.load(f)
+            except Exception:
+                st.session_state.coach_options_master = DEFAULT_COACHES.copy()
+        else:
+            st.session_state.coach_options_master = DEFAULT_COACHES.copy()
+    # Normaliseer en deduplicate
+    st.session_state.coach_options_master = sorted({
+        c.strip() for c in st.session_state.coach_options_master if str(c).strip() != ""
+    })
+
+    coach_filter_options = sorted(set(st.session_state.coach_options_master).union(set(data_coaches)))
+    selected_coaches = st.multiselect("Filter op coach", options=coach_filter_options, default=[])
     st.session_state["_coach_filter"] = selected_coaches
+
+    with st.expander("⚙️ Coach-instellingen"):
+        new_coach = st.text_input("Nieuwe coachnaam toevoegen", placeholder="Voornaam of Voor- en Achternaam")
+        cols_btn = st.columns([1, 1])
+        with cols_btn[0]:
+            if st.button("➕ Voeg coach toe"):
+                name = (new_coach or "").strip()
+                if name:
+                    if name not in st.session_state.coach_options_master:
+                        st.session_state.coach_options_master.append(name)
+                        st.session_state.coach_options_master = sorted(st.session_state.coach_options_master)
+                        try:
+                            with open(COACHES_FILE, "w", encoding="utf-8") as f:
+                                json.dump(st.session_state.coach_options_master, f, ensure_ascii=False, indent=2)
+                            st.success(f"Coach '{name}' toegevoegd en opgeslagen.")
+                        except Exception as e:
+                            st.warning(f"Coach kon niet worden opgeslagen: {e}")
+                    else:
+                        st.info("Deze coach staat al in de lijst.")
+                else:
+                    st.warning("Vul een geldige naam in.")
+        with cols_btn[1]:
+            if st.button("🔄 Herladen lijst"):
+                if COACHES_FILE.exists():
+                    try:
+                        with open(COACHES_FILE, "r", encoding="utf-8") as f:
+                            st.session_state.coach_options_master = json.load(f)
+                        st.success("Coachlijst herladen uit bestand.")
+                    except Exception as e:
+                        st.warning(f"Kon coachlijst niet herladen: {e}")
+                else:
+                    st.info("Geen coaches.json gevonden — standaardlijst blijft actief.")
 
     if st.button("🔄 Reset tabel", type="secondary"):
         st.session_state.cumulative = pd.DataFrame(columns=REQUIRED_BASE_COLS)
@@ -275,11 +328,20 @@ if not st.session_state.cumulative.empty:
 
     # --- Coach-editor ---
     with st.expander("Coach toewijzen/bewerken"):
+        # Editor met selecteerbare coachnamen (inclusief lege keuze)
+        coach_select_options = [""] + st.session_state.coach_options_master
         edit_df = st.data_editor(
             st.session_state.cumulative[["Naam", "Coach"]].copy().sort_values("Naam"),
             num_rows="dynamic",
             use_container_width=True,
             key="coach_editor",
+            column_config={
+                "Coach": st.column_config.SelectboxColumn(
+                    "Coach",
+                    options=coach_select_options,
+                    help="Kies een coach of laat leeg.",
+                )
+            },
         )
         if isinstance(edit_df, pd.DataFrame):
             base = st.session_state.cumulative.copy()
