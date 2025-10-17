@@ -277,11 +277,9 @@ if not st.session_state.cumulative.empty:
             use_container_width=True,
             key="coach_editor",
         )
-        # Merge terug op Naam
         if isinstance(edit_df, pd.DataFrame):
             base = st.session_state.cumulative.copy()
             base = base.drop(columns=["Coach"], errors="ignore").merge(edit_df, on="Naam", how="left")
-            # Kolomvolgorde
             wk_cols = [c for c in base.columns if c not in ["Naam", "Coach"]]
             base = base[["Naam", "Coach"] + wk_cols]
 
@@ -295,5 +293,39 @@ if not st.session_state.cumulative.empty:
                 except Exception as e:
                     st.warning(f"Kon wijzigingen niet opslaan: {e}")
                 st.success("Coach-gegevens bijgewerkt en opgeslagen.")
+
+    # --- PDF export ---
+    with st.expander("📄 PDF export"):
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        pdf_file = DATA_DIR / "weekuren_export.pdf"
+        df_export = df_show.fillna("")
+        data = [df_export.columns.tolist()] + df_export.values.tolist()
+
+        doc = SimpleDocTemplate(str(pdf_file), pagesize=landscape(A4))
+        table = Table(data, repeatRows=1)
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ])
+        table.setStyle(style)
+        story = [Paragraph("Weekuren-overzicht", getSampleStyleSheet()['Heading2']), table]
+        doc.build(story)
+
+        with open(pdf_file, 'rb') as f:
+            pdf_bytes = f.read()
+
+        st.download_button(
+            label="📥 Download PDF-overzicht",
+            data=pdf_bytes,
+            file_name="weekuren_overzicht.pdf",
+            mime="application/pdf",
+        )
 else:
     st.info("Nog geen data. Upload een CSV of Excel om te starten.")
