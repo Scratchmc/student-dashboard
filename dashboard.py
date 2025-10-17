@@ -94,17 +94,56 @@ st.divider()
 # -----------------------------
 # Upload & kolommen kiezen
 # -----------------------------
-uploaded = st.file_uploader("Upload wekelijkse CSV", type=["csv"]) 
 
-if uploaded is not None:
-    try:
-        raw = uploaded.read()
-        df = pd.read_csv(io.BytesIO(raw))
-    except Exception:
-        # Soms helpt het om ; als separator te gebruiken
-        uploaded.seek(0)
-        df = pd.read_csv(uploaded, sep=";")
+def read_uploaded_to_df(file) -> pd.DataFrame | None:
+    if file is None:
+        return None
+    name = getattr(file, "name", "uploaded")
+    lower = name.lower()
 
+    # Excel-bestand
+    if lower.endswith(".xlsx") or lower.endswith(".xls"):
+        file_bytes = io.BytesIO(file.read())
+        try:
+            xls = pd.ExcelFile(file_bytes)
+        except Exception as e:
+            st.error(f"Kan Excel niet openen: {e}")
+            return None
+        sheet = st.selectbox("Kies tabblad (Excel)", options=xls.sheet_names, index=0)
+        try:
+            df_local = pd.read_excel(xls, sheet_name=sheet)
+        except Exception as e:
+            st.error(f"Kan tabblad niet lezen: {e}")
+            return None
+        return df_local
+
+    # CSV-bestand
+    else:
+        # Probeer standaard CSV
+        raw = file.read()
+        # 1) standaard
+        try:
+            return pd.read_csv(io.BytesIO(raw))
+        except Exception:
+            pass
+        # 2) puntkomma
+        try:
+            return pd.read_csv(io.BytesIO(raw), sep=';')
+        except Exception:
+            pass
+        # 3) fallback met latin-1
+        try:
+            return pd.read_csv(io.BytesIO(raw), encoding='latin-1')
+        except Exception as e:
+            st.error(f"CSV kon niet gelezen worden: {e}")
+            return None
+
+
+uploaded = st.file_uploader("Upload wekelijkse CSV of Excel", type=["csv", "xlsx", "xls"]) 
+
+df = read_uploaded_to_df(uploaded)
+
+if df is not None:
     st.subheader("1) Controleer kolommen")
     st.dataframe(df.head(20), use_container_width=True)
 
@@ -137,25 +176,20 @@ if uploaded is not None:
 
     # Merge in cumulatieve tabel
     cum = st.session_state.cumulative.copy()
-    # Zorg dat 'Naam' kolom er is
     if "Naam" not in cum.columns:
         cum["Naam"] = []
 
-    # Maak tabel met alleen Naam en nieuwe weekkolom (als H:MM string)
     new_week_df = per_student[["Naam", "Uren"]].copy()
     new_week_df.rename(columns={"Uren": week_label}, inplace=True)
 
-    # Outer join op naam
     if cum.empty or list(cum.columns) == ["Naam"]:
         merged = new_week_df
     else:
         merged = pd.merge(cum, new_week_df, on="Naam", how="outer")
 
-    # Sorteer namen alfabetisch
     merged.sort_values("Naam", inplace=True, kind="stable")
     merged.reset_index(drop=True, inplace=True)
 
-    # Bewaar in sessie
     st.session_state.cumulative = merged
 
     st.success(f"Kolom voor {week_label} toegevoegd.")
