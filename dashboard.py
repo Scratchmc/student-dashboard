@@ -189,6 +189,78 @@ with st.sidebar:
             mime="text/csv",
         )
 
+    # --- PDF export (sidebar) ---
+    with st.expander("📄 PDF export"):
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        # Gebruik de huidige filterinstelling
+        df_for_pdf = st.session_state.cumulative.copy()
+        if selected_coaches:
+            df_for_pdf = df_for_pdf[df_for_pdf["Coach"].isin(selected_coaches)]
+        # Kolomvolgorde: Naam, Coach, rest
+        fixed_cols = ["Naam", "Coach"]
+        other_cols = [c for c in df_for_pdf.columns if c not in fixed_cols]
+        df_for_pdf = df_for_pdf[fixed_cols + other_cols].fillna("")
+
+        pdf_file = DATA_DIR / "weekuren_export.pdf"
+        data_tab = [df_for_pdf.columns.tolist()] + df_for_pdf.values.tolist()
+        doc = SimpleDocTemplate(str(pdf_file), pagesize=A4)  # Portret
+        table = Table(data_tab, repeatRows=1)
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+            ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ])
+        table.setStyle(style)
+        story = [Paragraph("Weekuren-overzicht", getSampleStyleSheet()['Heading2']), table]
+        doc.build(story)
+
+        with open(pdf_file, 'rb') as f:
+            pdf_bytes = f.read()
+        st.download_button(
+            label="📥 Download PDF-overzicht (portret)",
+            data=pdf_bytes,
+            file_name="weekuren_overzicht.pdf",
+            mime="application/pdf",
+        )
+
+    # --- Coach toewijzen/bewerken (sidebar) ---
+    with st.expander("👤 Coach toewijzen/bewerken"):
+        coach_select_options = [""] + st.session_state.coach_options_master if "coach_options_master" in st.session_state else [""]
+        edit_df = st.data_editor(
+            st.session_state.cumulative[["Naam", "Coach"]].copy().sort_values("Naam"),
+            num_rows="dynamic",
+            use_container_width=True,
+            key="coach_editor",
+            column_config={
+                "Coach": st.column_config.SelectboxColumn(
+                    "Coach",
+                    options=coach_select_options,
+                    help="Kies een coach of laat leeg.",
+                )
+            },
+        )
+        if isinstance(edit_df, pd.DataFrame):
+            base = st.session_state.cumulative.copy()
+            base = base.drop(columns=["Coach"], errors="ignore").merge(edit_df, on="Naam", how="left")
+            wk_cols = [c for c in base.columns if c not in ["Naam", "Coach"]]
+            base = base[["Naam", "Coach"] + wk_cols]
+            if not base.equals(st.session_state.cumulative):
+                st.session_state.cumulative = base
+                try:
+                    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(DATA_DIR), suffix=".csv") as tmp:
+                        base.to_csv(tmp.name, index=False)
+                        tmp_name = tmp.name
+                    os.replace(tmp_name, DATA_FILE)
+                except Exception as e:
+                    st.warning(f"Kon wijzigingen niet opslaan: {e}")
+                st.success("Coach-gegevens bijgewerkt en opgeslagen.")
+
 st.divider()
 
 # ---------------------------------
@@ -292,72 +364,6 @@ if not st.session_state.cumulative.empty:
 
     st.caption(f"Groen = ≥ {STUDENT_THRESHOLD_HOURS} uur, Rood = minder dan {STUDENT_THRESHOLD_HOURS} uur.")
 
-    # --- PDF export ---
-    with st.expander("📄 PDF export"):
-        from reportlab.lib.pagesizes import A4
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
-
-        pdf_file = DATA_DIR / "weekuren_export.pdf"
-        df_export = df_show.fillna("")
-        data = [df_export.columns.tolist()] + df_export.values.tolist()
-
-        doc = SimpleDocTemplate(str(pdf_file), pagesize=A4)  # Portretmodus
-        table = Table(data, repeatRows=1)
-        style = TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
-            ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-            ('FONT', (0, 0), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ])
-        table.setStyle(style)
-        story = [Paragraph("Weekuren-overzicht", getSampleStyleSheet()['Heading2']), table]
-        doc.build(story)
-
-        with open(pdf_file, 'rb') as f:
-            pdf_bytes = f.read()
-
-        st.download_button(
-            label="📥 Download PDF-overzicht (portret)",
-            data=pdf_bytes,
-            file_name="weekuren_overzicht.pdf",
-            mime="application/pdf",
-        )
-
-    # --- Coach-editor ---
-    with st.expander("Coach toewijzen/bewerken"):
-        # Editor met selecteerbare coachnamen (inclusief lege keuze)
-        coach_select_options = [""] + st.session_state.coach_options_master
-        edit_df = st.data_editor(
-            st.session_state.cumulative[["Naam", "Coach"]].copy().sort_values("Naam"),
-            num_rows="dynamic",
-            use_container_width=True,
-            key="coach_editor",
-            column_config={
-                "Coach": st.column_config.SelectboxColumn(
-                    "Coach",
-                    options=coach_select_options,
-                    help="Kies een coach of laat leeg.",
-                )
-            },
-        )
-        if isinstance(edit_df, pd.DataFrame):
-            base = st.session_state.cumulative.copy()
-            base = base.drop(columns=["Coach"], errors="ignore").merge(edit_df, on="Naam", how="left")
-            wk_cols = [c for c in base.columns if c not in ["Naam", "Coach"]]
-            base = base[["Naam", "Coach"] + wk_cols]
-
-            if not base.equals(st.session_state.cumulative):
-                st.session_state.cumulative = base
-                try:
-                    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(DATA_DIR), suffix=".csv") as tmp:
-                        base.to_csv(tmp.name, index=False)
-                        tmp_name = tmp.name
-                    os.replace(tmp_name, DATA_FILE)
-                except Exception as e:
-                    st.warning(f"Kon wijzigingen niet opslaan: {e}")
-                st.success("Coach-gegevens bijgewerkt en opgeslagen.")
+    # (PDF export en coach-editor zijn verplaatst naar de sidebar)
 else:
     st.info("Nog geen data. Upload een CSV of Excel om te starten.")
